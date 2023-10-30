@@ -1,0 +1,640 @@
+import glob
+
+import torch
+import torch.nn as nn
+from torch.nn import functional as F
+import numpy as np
+import argparse
+from tqdm import tqdm
+import time
+import os
+import gc
+from einops import rearrange, repeat, reduce
+from einops.layers.torch import Rearrange
+from torch.utils.data import Dataset, DataLoader, TensorDataset
+import logging, pickle, h5py
+
+
+from libs.factorization_module import FABlock2D
+from libs.positional_encoding_module import SirenNet, GaussianFourierFeatureTransform, Sine
+from libs.basics import PreNorm, MLP, masked_instance_norm
+from utils import Trainer, dict2namespace, index_points, load_checkpoint, save_checkpoint, ensure_dir
+import yaml
+from torch.optim.lr_scheduler import StepLR, OneCycleLR
+from loss_fn import rel_l2_loss, rel_l1_loss
+
+from matplotlib import pyplot as plt
+from mpl_toolkits.axes_grid1 import ImageGrid
+import shutil
+from collections import OrderedDict
+from train_utils import CurriculumSampler
+import random
+
+torch.backends.cudnn.benchmark = True
+
+
+class FactorizedTransformer(nn.Module):
+    def __init__(self,
+                 dim,
+                 dim_head,
+                 heads,
+                 dim_out,
+                 depth,
+                 **kwargs):
+        super().__init__()
+        self.layers = nn.ModuleList([])
+        for _ in range(depth):
+
+            layer = nn.ModuleList([])
+            layer.append(nn.Sequential(
+                GaussianFourierFeatureTransform(2, dim // 2, 8),
+                nn.Linear(dim, dim)
+            ))
+            layer.append(FABlock2D(dim, dim_head, dim, heads, dim_out, use_rope=True, **kwargs))
+            self.layers.append(layer)
+
+    def forward(self, u, pos_lst):
+        b, nx, ny, c = u.shape
+        nx, ny = pos_lst[0].shape[0], pos_lst[1].shape[0]
+        pos = torch.stack(torch.meshgrid([pos_lst[0].squeeze(-1), pos_lst[1].squeeze(-1)]), dim=-1)
+        for pos_enc, attn_layer in self.layers:
+            u += pos_enc(pos).view(1, nx, ny, -1)
+            u = attn_layer(u, pos_lst) + u
+        return u
+
+
+class FactFormer2D(nn.Module):
+    def __init__(self,
+                 config
+                 ):
+        super().__init__()
+        self.config = config
+        # self.resolutions = config.resolutions   # hierachical resolutions, [16, 8, 4]
+        # self.out_resolution = config.out_resolution
+
+        self.in_dim = config.in_dim
+        self.in_tw = config.in_time_window
+        self.out_dim = config.out_dim
+        self.out_tw = config.out_time_window
+
+        #self.num_latent = config.num_latent
+        #self.latent_dim = config.latent_dim   # latent bottleneck dimension
+        self.dim = config.dim                 # dimension of the transformer
+        self.depth = config.depth           # depth of the encoder transformer
+        self.dim_head = config.dim_head
+        self.reducer = config.reducer
+
+        self.heads = config.heads
+
+        self.pos_in_dim = config.pos_in_dim
+        self.pos_out_dim = config.pos_out_dim
+        self.positional_embedding = config.positional_embedding
+        self.kernel_multiplier = config.kernel_multiplier
+        self.latent_multiplier = config.latent_multiplier
+        self.latent_dim = int(self.dim * self.latent_multiplier)
+        self.max_latent_steps = config.max_latent_steps
+
+        # flatten time window
+        self.to_in = nn.Linear(self.in_tw, self.dim, bias=True)
+
+        # assume input is b c t h w d
+        self.encoder = FactorizedTransformer(self.dim, self.dim_head, self.heads, self.dim, self.depth,
+
+                                             kernel_multiplier=self.kernel_multiplier)
+        self.expand_latent = nn.Linear(self.dim, self.latent_dim, bias=False)
+        self.latent_time_emb = nn.Parameter(torch.randn(1, self.max_latent_steps,
+                                                        1, 1, self.latent_dim) * 0.02,
+                                            requires_grad=True)
+
+        self.propagator = PreNorm(self.latent_dim,
+                                  MLP([self.latent_dim, self.dim, self.latent_dim], act_fn=nn.GELU()))
+        self.simple_to_out = nn.Sequential(
+            Rearrange('b nx ny c -> b c (nx ny)'),
+            nn.GroupNorm(num_groups=int(8 * self.latent_multiplier), num_channels=self.latent_dim),
+            nn.Conv1d(self.latent_dim, self.dim, kernel_size=1, stride=1, padding=0,
+                      groups=8, bias=False),
+            nn.GELU(),
+            nn.Conv1d(self.dim, self.dim // 2, kernel_size=1, stride=1, padding=0, bias=False),
+            nn.GELU(),
+            nn.Conv1d(self.dim // 2, self.out_dim, kernel_size=1, stride=1, padding=0, bias=True)
+        )
+        # self.decoder = Reconstruct3D(self.dim, self.dim_head, self.heads, self.out_dim)
+
+    def forward(self,
+                u,
+                pos_lst,
+                latent_steps=1,
+                ):
+        b, nx, ny, c = u.shape
+        u = self.to_in(u)
+        u = self.encoder(u, pos_lst)
+        # u = self.temporal_conv(u)
+        u_lst = []
+        u = self.expand_latent(u)
+        for l_t in range(latent_steps):
+            u = u + self.latent_time_emb[:, l_t, ...]
+            u = self.propagator(u) + u
+            u_lst.append(u)
+
+        u = torch.cat(u_lst, dim=0)
+        u = self.simple_to_out(u)
+        u = rearrange(u, '(t b) c (nx ny) -> b t nx ny c', nx=nx, ny=ny, t=latent_steps)
+        return u
+
+
+# def loss_wrapper(x, y, denormalize_fn, lam=0.1):
+def loss_wrapper(x, y, lam=0.1):
+    # x: b t n n c
+    # break down the loss for each channel
+    l2norm = 0.
+    loss_dict = {}
+    l2norm = rel_l2_loss(x[..., 0], y[..., 0], dim=(1, 2, 3), reduction='sum')
+    loss_dict['vort'] = l2norm.detach().clone()
+    return l2norm, loss_dict
+
+
+def test_loss_wrapper(x, y):
+
+    return rel_l2_loss(x[..., 0], y[..., 0], dim=(1, 2, 3), reduction='sum')
+
+
+class Fluid2DData(Dataset):
+    # will contain five fields,
+    def __init__(self, config, train=True,
+                 max_len=320):
+        self.data_dir = config.data.data_dir
+        self.resolution = config.data.resolution
+        self.max_latent_steps = config.model.max_latent_steps
+        self.skip = 256 // self.resolution
+        self.interval = config.data.interval
+        self.val_mode = config.data.val_mode
+
+        self.tw = config.model.in_time_window
+        self.out_tw = config.model.out_time_window
+        self.seq_len = max_len // self.interval - (self.tw + self.out_tw)
+        print(f'Using sequence of length: {self.seq_len}')
+
+        self.train = train
+        self.train_idxs = list(range(0, config.data.train_num*self.seq_len))
+        self.test_idxs = list(range(0, config.data.test_num*self.seq_len))
+
+        if not self.val_mode:
+            # this ensure same test set
+            if self.train:
+                self.idxs = self.train_idxs
+                self.seq_no = list(range(config.data.train_num))
+            else:
+                self.idxs = self.test_idxs
+                self.seq_no = list(range(-config.data.test_num, 0, 1))    # count from the end
+        else:
+            # shuffle the indices
+            print('Using validation mode')
+            all_idxs = list(range(0, config.data.train_num + config.data.test_num))
+            prng = np.random.RandomState(1234)
+            prng.shuffle(all_idxs)
+            if self.train:
+                self.idxs = self.train_idxs
+                self.seq_no = all_idxs[:config.data.train_num]
+            else:
+                self.idxs = self.test_idxs
+                self.seq_no = all_idxs[config.data.train_num:]
+
+        self.stats = {}
+        self.load_all_data(self.data_dir)
+        if os.path.exists(config.data.dataset_stat):
+            print('Loading dataset stats from', config.data.dataset_stat)
+            stats = np.load(config.data.dataset_stat, allow_pickle=True)
+            # npz to dict
+            self.stats = {k: stats[k] for k in stats.files}
+        else:
+            print('Calculating dataset stats')
+            self.prepare_data()
+            print('Saving dataset stats to', config.data.dataset_stat)
+            self.dump_stats(config.data.dataset_stat)
+        print(f'Dataset stats: {self.stats}')
+
+    def prepare_data(self):
+        # load all training data and then calculate the mean/std online
+        self.stats['vort_mean'] = self.data.mean()
+        self.stats['vort_std'] = self.data.std(axis=1).mean()
+
+    def denormalize(self, x: torch.Tensor) -> torch.Tensor:
+        # x: b n n n c, assume the order is prs, vel
+        mean = torch.tensor(self.stats['vort_mean'], device=x.device, dtype=x.dtype)
+        std = torch.tensor(self.stats['vort_std'], device=x.device, dtype=x.dtype)
+        x = x * std + mean
+        return x
+
+    def dump_stats(self, f):
+        np.savez(f, **self.stats)
+
+    def load_all_data(self, path):
+        data = np.load(path)
+
+        self.data = data[self.seq_no, ::self.interval, ::self.skip, ::self.skip]
+        del data
+        print('Loaded data from: ', path)
+        print(f'Data shape: {self.data.shape}')
+
+    def __len__(self):
+        return len(self.idxs)
+
+    def __getitem__(self, idx):
+        idx = self.idxs[idx]
+        seq_no = idx // self.seq_len
+        start = idx % self.seq_len
+        # randomly sample a start time step
+        feat = self.data[seq_no]
+
+        feat = (feat - self.stats['vort_mean']) / self.stats['vort_std']
+        feat_ = feat[start:start+self.tw, ...]     # [t, n, n]
+        feat_tsr = torch.from_numpy(feat_).float()
+        feat_tsr = rearrange(feat_tsr, 't nx ny -> nx ny t')
+        if self.train:
+            pred_ = feat[start + self.tw:start + self.tw + self.max_latent_steps, ...]           # [n, n]
+            pred_tsr = torch.from_numpy(pred_).float()
+            pred_tsr = pred_tsr.unsqueeze(-1)  # n n c
+        else:
+            pred_ = feat[start + self.tw:start + self.tw + self.out_tw, ...]  # [n, n]
+            pred_tsr = torch.from_numpy(pred_).float()
+            pred_tsr = pred_tsr.unsqueeze(-1)  # t n n c
+        return feat_tsr, pred_tsr
+
+    def add_pushforward_steps(self, pushforward=1):
+        # add the pushforward steps to the latent steps
+        self.max_latent_steps *= (1+pushforward)
+        print(f'New max latent steps: {self.max_latent_steps}')
+
+
+class KM2dTrainer(Trainer):
+    def __init__(self,
+                 config,
+                 args,
+
+                 ):
+        super().__init__(config, args)
+
+        # which device available?
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        print(f'Using device: {self.device}')
+        # build the model with config
+        self.model = FactFormer2D(config.model).to(self.device)
+        num_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
+        print(f"Number of trainable parameters: {num_params}")
+
+        # build the optimizer
+        self.optimizer = torch.optim.AdamW(self.model.parameters(),
+                                           lr=config.training.lr,
+                                           weight_decay=1e-4)
+
+        # build the dataset
+        self.batch_size = config.data.batch_size
+        self.train_dataset = Fluid2DData(config, train=True, max_len=320)
+        self.test_dataset = Fluid2DData(config, train=False, max_len=320)
+        self.test_loader = DataLoader(self.test_dataset,
+                                      batch_size=10, shuffle=False, num_workers=2,
+                                      pin_memory=False, )
+        self.train_loader = DataLoader(self.train_dataset,
+                                       batch_size=self.batch_size, shuffle=True, num_workers=2,
+                                       pin_memory=True, persistent_workers=True)
+
+        self.denormalize = self.train_dataset.denormalize
+
+        # build the loss function
+        self.loss_fn = loss_wrapper
+        self.test_loss_fn = test_loss_wrapper
+
+        # self.xy_grid = torch.from_numpy(self.train_dataset.coords['pos']).float().to(self.device)
+
+        self.n_iter = 0
+        self.max_latent_steps = config.model.max_latent_steps
+
+        self.scheduler = OneCycleLR(self.optimizer,
+                                    config.training.lr,
+                                    epochs=config.training.epochs,
+                                    steps_per_epoch=int(len(self.train_dataset) // config.data.batch_size),
+                                    div_factor=config.training.lr_div_factor,
+                                    pct_start=0.2,
+                                    final_div_factor=config.training.lr_div_factor*10,
+                                    )
+        total_iters = int(len(self.train_dataset) // config.data.batch_size) * config.training.epochs
+        print(f'Total training iterations:'
+              f' {total_iters}')
+
+        self.curriculum_scheduler = CurriculumSampler(config.training.curriculum_start,
+                                                      config.training.curriculum_end,
+                                                      config.training.curriculum_length)
+        self.pushforward_after = config.training.pushforward_after
+        self.pushforward_every = config.training.pushforward_every
+        self.pushforward_flag = False
+
+        # create logger and ensure log directory
+        self.log_dir = config.log_dir
+        # ensure the directory to log
+        if os.path.exists(self.log_dir) and not args.resume:
+            shutil.rmtree(self.log_dir)
+            print('Log directory exists, removing it.')
+        ensure_dir(self.log_dir)
+        # ensure the directory to save the model
+        ensure_dir(self.log_dir + '/model')
+        if self.config.training.dump_visualization:
+            ensure_dir(self.log_dir + '/visualization')
+
+        self.logger = logging.getLogger("LOG")
+        self.logger.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        file_handler = logging.FileHandler('%s/%s.txt' % (self.log_dir, 'logging_info'))
+        file_handler.setLevel(logging.INFO)
+        file_handler.setFormatter(formatter)
+        self.logger.addHandler(file_handler)
+        if args.comment is not None:
+            self.logger.info(args.comment)
+
+        # dump the config
+        with open(self.log_dir + '/config.yaml', 'w') as f:
+            yaml.dump(config, f)
+
+        # cache the current training script
+        filename = os.path.basename(__file__)
+        shutil.copy(__file__, self.log_dir + f'/{filename}')
+        # copy all the files under nn_module
+        shutil.copytree('nn_module', self.log_dir + '/nn_module')
+
+    def load_checkpoint(self, checkpoint_path):
+        print(f'Resuming checkpoint from: {checkpoint_path}')
+        self.logger.info(f'Resuming checkpoint from: {checkpoint_path}')
+
+        ckpt = load_checkpoint(checkpoint_path)  # custom method for loading last checkpoint
+        self.model.load_state_dict(ckpt['model'])
+        self.optimizer.load_state_dict(ckpt['optimizer'])
+        self.scheduler.load_state_dict(ckpt['scheduler'])
+        self.curriculum_scheduler = ckpt['curriculum_scheduler']
+
+        self.n_iter = ckpt['n_iter']
+
+        print(f'Loaded checkpoint from: {checkpoint_path}')
+
+    def save_checkpoint(self, postfix):
+        ckpt = {
+            'model': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict(),
+            'scheduler': self.scheduler.state_dict(),
+            'n_iter': self.n_iter,
+            # 'curriculum_scheduler': self.curriculum_scheduler,
+        }
+        checkpoint_path = f'{self.log_dir}/model/checkpoint_{postfix}.pth'
+        save_checkpoint(ckpt, checkpoint_path)
+
+    def make_image_grid(self,
+                        image: torch.Tensor,
+                        out_path):
+        # side by side comparison between original and reconstructed
+        b, t, h, w = image.shape
+        image = image.detach().cpu().numpy()
+        image = image.reshape((b*t, h, w))
+        fig = plt.figure(figsize=(8., 8.))
+        grid = ImageGrid(fig, 111,  # similar to subplot(111)
+                         nrows_ncols=(b, t),  # creates 2x2 grid of axes
+                         )
+
+        for ax, im_no in zip(grid, np.arange(b*t)):
+            # Iterating over the grid returns the Axes.
+            ax.imshow(
+                image[im_no].reshape((h, w)),
+                cmap='twilight',
+            )
+
+            ax.axis('off')
+        plt.savefig(out_path, bbox_inches='tight')
+        plt.close()
+
+    # put input/output to the model here
+    def step_fn(self, data,
+                train=True,
+                current_latent_steps=None,
+                pushforward=False):
+        torch.cuda.empty_cache()
+        x, y = data
+        x = x.to(self.device)
+        y = y.to(self.device)
+
+        b, t_in = x.shape[0], x.shape[-1]
+
+        pos_x = torch.linspace(0, 2*np.pi, self.config.data.resolution).float().to(self.device).unsqueeze(-1)
+        pos_y = torch.linspace(0, 2*np.pi, self.config.data.resolution).float().to(self.device).unsqueeze(-1)
+
+        pos_lst = [pos_x, pos_y]
+
+        # loss
+        if train:
+            # forward
+            # t_step = self.curriculum_scheduler.get_value()
+            if current_latent_steps is None:
+                y_hat = self.model(x, pos_lst, 1)
+                y = y[:, 0:1]
+            elif not pushforward:
+                y_hat = self.model(x, pos_lst, current_latent_steps)
+                y = y[:, 0:current_latent_steps]
+            else:
+                with torch.no_grad():
+                    x_hat = self.model(x, pos_lst, current_latent_steps)
+                    x = torch.cat([x[..., current_latent_steps:],
+                                   rearrange(
+                                   x_hat[:, :self.max_latent_steps],
+                                   'b t h w 1 -> b h w t')], dim=-1)
+                    # pushforward twice
+                    x_hat = self.model(x, pos_lst, current_latent_steps)
+                    x = torch.cat([x[..., current_latent_steps:],
+                                      rearrange(
+                                      x_hat[:, :self.max_latent_steps],
+                                      'b t h w 1 -> b h w t')], dim=-1)
+
+                y_hat = self.model(x.detach(), pos_lst, current_latent_steps)
+                y = y[:, current_latent_steps*2:current_latent_steps*3]
+
+            loss, loss_dict = self.loss_fn(y_hat, y)
+
+            return loss, loss_dict
+        else:
+            if y.shape[1] % self.max_latent_steps != 0:
+                print(f'Warning: length of ground truth: '
+                      f'{y.shape[1]} is not divisible by'
+                      f'latent steps: {self.max_latent_steps}')
+            with torch.no_grad():
+                y_hat = torch.zeros_like(y)  #  b, t, h, w, c
+                for i in range(y.shape[1]//self.max_latent_steps):
+                    y_hat[:, i*self.max_latent_steps:(i+1)*self.max_latent_steps] = self.model.forward(x, pos_lst,
+                                                                             latent_steps=self.max_latent_steps)
+                    x = torch.cat([x[..., self.max_latent_steps:],
+                                   rearrange(
+                                       y_hat[:, i*self.max_latent_steps:(i+1)*self.max_latent_steps],
+                                       'b t h w 1 -> b h w t'
+                                   )], dim=-1)
+
+            y_hat = self.denormalize(y_hat)
+            y = self.denormalize(y)
+            test_loss = self.test_loss_fn(y_hat, y)
+            return test_loss, y_hat, y
+
+    @torch.no_grad()
+    def testing_loop(self, epoch):
+        self.model.eval()
+        visualization_cache = {
+            'output': [],
+            'target': [],
+        }
+        losses = []
+        picked = 0
+        for i, data in enumerate(tqdm(self.test_loader)):
+            # sample test input always with a fixed ratio
+            test_loss, y_hat, y = self.step_fn(data, train=False)
+
+            # loss
+            losses += [test_loss]
+
+            if picked < 4:
+                idx = np.arange(0, min(4 - picked, y.shape[0]))
+                # set masked values to np.nan
+                # y = self.denormalize(y)
+                # y_hat = self.denormalize(y_hat)
+
+                # randomly pick a batch
+                y = y[idx, ::2, ..., 0]
+                y_hat = y_hat[idx, ::2, ..., 0]
+
+                picked += y.shape[0]
+
+                visualization_cache['output'] += [y_hat]
+                visualization_cache['target'] += [y]
+
+        test_loss = torch.stack(losses).mean().item()
+        if self.config.training.dump_visualization:
+            # save visualization
+            # denormalize
+            visualization_cache = {k: torch.cat(v, dim=0) for k, v in visualization_cache.items()}
+
+            # self.make_image_grid(visualization_cache['input'],
+            #                      out_path=f'{self.log_dir}/visualization/input_{epoch}.png',
+            #                      nrow=visualization_cache['input'].shape[1])
+            self.make_image_grid(visualization_cache['output'],
+                                 out_path=f'{self.log_dir}/visualization/output_{epoch}.png')
+            self.make_image_grid(visualization_cache['target'],
+                                 out_path=f'{self.log_dir}/visualization/target_{epoch}.png')
+
+        return test_loss
+
+    def training_loop(self):
+
+        # train the model
+        self.model.train()
+
+        # tqdm progress bar
+        with tqdm(range(self.config.training.epochs)) as pbar:
+            if self.n_iter > 0:
+                pbar.update(self.n_iter)
+            while True:
+                if pbar.n % self.config.training.test_every == 0:
+                    test_loss = self.testing_loop(pbar.n)
+                    print(f'Epoch {pbar.n}: test loss {test_loss}')
+                    self.logger.info(f'Epoch {pbar.n} - Test loss: {test_loss:.4f}')
+                if pbar.n % self.config.training.save_every == 0:
+                    self.save_checkpoint(pbar.n)
+                if pbar.n >= self.config.training.epochs:
+                    self.save_checkpoint('final')
+                    break
+                for data in self.train_loader:
+                    # get the data
+
+                    if self.n_iter > self.pushforward_after and self.n_iter % self.pushforward_every == 0:
+                        loss, loss_dict = self.step_fn(data, train=True,
+                                                       current_latent_steps=self.curriculum_scheduler.get_value(),
+                                                       pushforward=True
+                                                       )
+                    else:
+                        loss, loss_dict = self.step_fn(data, train=True,
+                                                       current_latent_steps=self.curriculum_scheduler.get_value(),
+                                                       pushforward=False
+                                                       )
+
+                    self.optimizer.zero_grad()
+
+                    # backward
+                    loss.backward()
+
+                    # clip gradient
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
+                    self.optimizer.step()
+                    self.scheduler.step()
+                    self.curriculum_scheduler.step()
+
+                    # update progress bar
+                    desc = f'Epoch {pbar.n}/{self.config.training.epochs} ' + \
+                           f' - Loss: {loss.item():.4f}' + \
+                           f' - LR: {self.optimizer.param_groups[0]["lr"]:.6f}' + \
+                           f' - Latent steps: {self.curriculum_scheduler.get_value()}'
+
+                    # add loss dict to desc
+                    for k, v in loss_dict.items():
+                        desc += f' - {k}: {v.item():.4f}'
+                    pbar.set_description(desc)
+                    self.n_iter += 1
+                    if not self.pushforward_flag and self.n_iter > self.pushforward_after:
+                        break
+                if not self.pushforward_flag and self.n_iter > self.pushforward_after:
+                    self.update_dataset()
+                pbar.update(1)
+
+    def update_dataset(self):
+        self.pushforward_flag = True
+        self.logger.info(f'Pushforward after {self.pushforward_after} iterations')
+        self.logger.info(f'Updating the dataset')
+        self.train_dataset.add_pushforward_steps(2)
+        del self.train_loader
+        self.train_loader = DataLoader(self.train_dataset,
+                                       batch_size=self.batch_size, shuffle=True, num_workers=2,
+                                       pin_memory=True, persistent_workers=True, drop_last=True)
+
+def parse_args_and_config():
+    parser = argparse.ArgumentParser(description=globals()['__doc__'])
+    parser.add_argument('--config', type=str, required=True, help='Path to the config file')
+    parser.add_argument('--seed', type=int, default=1234, help='Random seed')
+    parser.add_argument('--resume', action='store_true', help='Resume training')
+    parser.add_argument('--testing', action='store_true', help='Testing mode')
+    parser.add_argument('--ckpt_to_resume', type=str, default=None, help='Checkpoint to resume')
+    parser.add_argument('--comment', type=str, default='', help='Comment')
+    args = parser.parse_args()
+
+    # parse config file
+    with open(os.path.join('configs', args.config), 'r') as f:
+        config = yaml.safe_load(f)
+    config = dict2namespace(config)
+    return args, config
+
+
+def set_random_seed(seed):
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+
+
+if __name__ == '__main__':
+    args, config = parse_args_and_config()
+    set_random_seed(args.seed)
+    # create the trainer
+    if not args.resume:  # train from scratch
+        trainer = KM2dTrainer(config, args)
+        trainer.training_loop()
+    else:  # resume training
+        assert args.ckpt_to_resume is not None, 'Please specify the checkpoint to resume'
+        # check if the checkpoint exists
+        assert os.path.exists(args.ckpt_to_resume), f'Checkpoint {args.ckpt_to_resume} does not exist'
+
+        trainer = KM2dTrainer(config, args)
+        trainer.load_checkpoint(args.ckpt_to_resume)
+        trainer.training_loop()
+
+    print('Running finished...')
+    exit()
+
+
