@@ -66,7 +66,7 @@ class FABlock2D(nn.Module):
                                                residual=False,  # add a diagonal bias
                                                softmax=use_softmax,
                                                scaling=1 / np.sqrt(dim_head * kernel_multiplier)
-                                               if kernel_multiplier > 4 or use_softmax else 1)
+                                               if kernel_multiplier > 4 or use_softmax else scaling_factor)
         self.low_rank_kernel_y = LowRankKernel(self.latent_dim, dim_head * kernel_multiplier, heads,
                                                positional_embedding=positional_encoding,
                                                residual=False,
