@@ -20,6 +20,14 @@ fa_layer = FABlock3D(dim,                   # input dimension
                      use_rope,              # use rotary positional encoding or not, by default True
                      scaling_factor         # use scaling factor to modulate the kernel, an example is 1/ sqrt(d) like scaled-dot product attention, by default is: 1
                     )
+# random input
+z = torch.randn(((4, 64, 64, 64, dim))
+# axial coords
+pos_x = torch.linspace(0, 1, 64)
+pos_y = torch.linspace(0, 1, 64)
+pos_z = torch.linspace(0, 1, 64)
+
+z = fa_layer(z, [pos_x, pos_y, pos_z])
 ```
 
 For running experiments on the problems discussed in the paper, please refer to the ```examples``` directory. 
