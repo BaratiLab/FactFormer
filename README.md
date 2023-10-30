@@ -5,7 +5,7 @@ Official implementation of Scalable Transformer for PDE surrogate modeling
 
 The code is tested under PyTorch 1.8.2 and CUDA 11, later versions should also work. Other packages needed are Numpy/einops/Matplotlib/tqdm
 
-Use a layer of factorized attention:
+Use a layer of 3D factorized attention:
 
 ```python
 import torch
@@ -22,6 +22,21 @@ fa_layer = FABlock3D(dim,                   # input dimension
                     )
 ```
 
+For running experiments on the problems discussed in the paper, please refer to the ```examples``` directory. 
+
+For example, training a model for Darcy flow:
+
+```python darcy2d_fact.py --config darcy2d_fact.yml```
+
 ### Dataset
+
+We provided our generated dataset at: 
+* Kmflow 2D: https://drive.google.com/file/d/1QkiF6ClryURuiBMLqXc50Fvf7lJI7Ajm/view?usp=sharing
+* Isotropic 3D: https://drive.google.com/drive/folders/1oTtA8k56R6zL6xgjBg9eFTr1v_fwtN4C?usp=sharing
+* Smoke 3D: https://drive.google.com/drive/folders/14E3cYd_V06jU-i040FVerHYhbFpmWyXv?usp=sharing
+
+The Darcy dataset can be obtained from FNO's [repo](https://github.com/neuraloperator/neuraloperator/tree/master) .
+
+Please refer to the scripts under ```dataset``` to generate data or customize the dataset.
 
 
