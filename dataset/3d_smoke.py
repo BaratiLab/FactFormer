@@ -49,8 +49,8 @@ def generate_trajectories_smoke(
     Generate data trajectories for smoke inflow in bounded domain
     """
     # currently data is hard coded to be 64x64x64
-    # in addition, the time interval is hard coded to be 1 (equals to physical dt=1 seconds)
-    # each trajectory length is hardcoded to be 30
+    # in addition, the time interval is hard coded to be 0.75 (equals to physical dt=0.75 seconds)
+    # each trajectory length is hardcoded to be 28 and first 8 frames are skipped
 
     logger.info(f"Number of samples: {num_samples}")
 
@@ -121,4 +121,4 @@ def generate_trajectories_smoke(
             
 
 if __name__ == "__main__":
-    generate_trajectories_smoke(8, "smoke_data_nu0.003_b0.5_lowres", n_parallel=8, seed=1234)
+    generate_trajectories_smoke(8, "smoke_data_nu0.003_b0.5_test", n_parallel=8, seed=1234)
