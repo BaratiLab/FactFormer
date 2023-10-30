@@ -7,7 +7,7 @@ to $4\cos(4y)$ to generate more complex pattern (i.e. more vorticies).
 
 ### 3D Isotropic turbulence
 
-Installation of [SpectralDNS](https://github.com/spectralDNS/spectralDNS) is required to run the script.
+Installation of [SpectralDNS](https://github.com/spectralDNS/spectralDNS) is required to run the script. For the example of bash command, see: ```run_iso.sh```.
 
 ### 3D Smoke
 
