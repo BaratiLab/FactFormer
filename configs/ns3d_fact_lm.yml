@@ -1,0 +1,40 @@
+log_dir: $place_to_log$
+
+data:
+    data_dir: $dataset_dir$
+    resolution: 60
+    dataset_stat: ns3d_stats_n1100.npz
+    train_num: 1000
+    test_num: 100
+    batch_size: 2
+
+model:
+    in_dim: 4
+    out_dim: 4
+    in_time_window: 10
+    out_time_window: 10
+    dim: 128
+    heads: 6
+    depth: 4
+    dim_head: 64
+    kernel_multiplier: 3
+    pos_in_dim: 3
+    pos_out_dim: 3
+    positional_embedding: rotary
+    max_latent_steps: 2
+    latent_mutliplier: 1.5
+
+training:
+    curriculum_end: 2
+    curriculum_length: 5000
+    curriculum_start: 1
+    dump_visualization: true
+    epochs: 160
+    lr: 0.0003
+    lr_div_factor: 10000
+    pushforward_after: 8000
+    pushforward_every: 2
+    sampling_ratio: 1.0
+    save_every: 40
+    test_every: 20
+

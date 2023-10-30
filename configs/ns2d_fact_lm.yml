@@ -1,0 +1,42 @@
+log_dir: ./experiments_new/km2d_pred_latent_128
+
+data:
+    data_dir: /home/cmu-mail-3090/Zijie/pde_data3/kf_2d_re1000_256_120seed.npy
+    resolution: 128
+    interval: 2
+    train_num: 100
+    test_num: 20
+    batch_size: 8
+    val_mode: False
+    dataset_stat: km2d_stat.npz
+
+model:
+    depth: 4
+    dim: 128
+    dim_head: 64
+    heads: 8
+    in_dim: 1
+    in_time_window: 10
+    kernel_multiplier: 2
+    latent_multiplier: 2.0
+    max_latent_steps: 4
+    out_dim: 1
+    out_time_window: 16
+    pos_in_dim: 2
+    pos_out_dim: 2
+    positional_embedding: rotary
+    reducer: pool
+
+training:
+    curriculum_end: 4
+    curriculum_length: 6000
+    curriculum_start: 1
+    dump_visualization: true
+    epochs: 50
+    lr: 0.0005
+    lr_div_factor: 10000
+    pushforward_after: 8000
+    pushforward_every: 3
+    sampling_ratio: 1.0
+    save_every: 10
+    test_every: 10

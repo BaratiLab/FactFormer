@@ -1,0 +1,32 @@
+log_dir: $place_to_log$
+
+data:
+    train_data_dir: $dataset_dir$/piececonst_r421_N1024_smooth1.mat
+    test_data_dir: $dataset_dir$/piececonst_r421_N1024_smooth2.mat
+    resolution: 141
+    train_num: 1000
+    test_num: 100
+    batch_size: 8
+    dataset_stat: darcy2d_stats_141.npz
+
+model:
+    in_dim: 1
+    out_dim: 1
+    dim: 128
+    heads: 12
+    depth: 3
+    dim_head: 64
+    kernel_multiplier: 2
+    pos_in_dim: 2
+    pos_out_dim: 2
+    positional_embedding: rotary
+    resolution: 141
+
+training:
+    epochs: 500
+    lr: 0.0008
+    lr_div_factor: 10000
+    test_every: 50
+    save_every: 100
+    dump_visualization: True
+    sampling_ratio: 1.0

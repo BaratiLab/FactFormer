@@ -1,0 +1,43 @@
+log_dir: ./experiments_smoke/smoke3d_pred_latent_4step_pad_oldcode
+
+data:
+    data_dir: /home/zijiel/zijie/pde_data/smoke_data_nu0.003_b0.5
+    resolution: 64
+    dataset_stat: smoke3d_stats_nu0_003_b0.5_all.npz
+    start_frame: 0
+    train_num: 2000
+    test_num: 200
+    batch_size: 2
+    checkfiles: False
+
+model:
+    in_dim: 4
+    out_dim: 4
+    in_time_window: 4
+    out_time_window: 16
+    dim: 128
+    heads: 6
+    depth: 3
+    dim_head: 64
+    pos_in_dim: 3
+    pos_out_dim: 3
+    positional_embedding: rotary
+    kernel_multiplier: 3
+    latent_multiplier: 1.5
+    max_latent_steps: 4
+    padding: 2
+
+training:
+    epochs: 100
+    lr: 0.0003
+    lr_div_factor: 10000
+    test_every: 20
+    save_every: 50
+    dump_visualization: True
+    sampling_ratio: 1.0
+    curriculum_start: 1
+    curriculum_end: 4
+    curriculum_length: 6000
+    pushforward_after: 10000
+    pushforward_every: 3
+
