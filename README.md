@@ -47,4 +47,13 @@ The Darcy dataset can be obtained from FNO's [repo](https://github.com/neuralope
 
 Please refer to the scripts under ```dataset``` to generate data or customize the dataset.
 
+### Pretrained checkpoints
 
+We provided the trained models used in the paper and their logs in the below links. The code in the current repo is reorganized and cleaned up a bit for better clarity, the checkpoints is trained with scripts attached with them in these links.
+
+| Problem       | link   |
+|---------------|---------------------------------------------------------------------------|
+| KM2d  |  [link](https://drive.google.com/drive/folders/1EHp9PKyU6PBtR1VhROys9jjnkh7Y9FDH?usp=drive_link) |
+| Darcy2d |  [link](https://drive.google.com/drive/folders/1HOffKyN8dd-W4iDA6MicISlID5Q4FOm_?usp=drive_link) |
+| Smoke3d | [link](https://drive.google.com/drive/folders/1W2LD_0C-rK85CXDPXMOKXnFORY4IN7TP?usp=drive_link) |
+| Turb3d |  [link](https://drive.google.com/drive/folders/1s_hdNrxa4dqA3wawA3c8fAFqFhYYhix6?usp=drive_link) |
