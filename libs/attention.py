@@ -85,10 +85,10 @@ class AsymetricKernel(nn.Module):
                 for h in range(self.heads):
                     inif_fn(param[h * dim_head:(h + 1) * dim_head, :], gain=self.init_gain)
                     #
-                    param.data[h * self.dim_head:(h + 1) * self.dim_head, :] += self.diagonal_weight * \
-                                                                                torch.diag(torch.ones(
-                                                                                    param.size(-1),
-                                                                                    dtype=torch.float32))
+                    # param.data[h * self.dim_head:(h + 1) * self.dim_head, :] += self.diagonal_weight * \
+                    #                                                             torch.diag(torch.ones(
+                    #                                                                 param.size(-1),
+                    #                                                                 dtype=torch.float32))
 
     def initialize_qkv_weights(self):
         init_fn = xavier_uniform_
