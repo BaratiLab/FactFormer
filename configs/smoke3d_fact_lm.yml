@@ -1,7 +1,7 @@
-log_dir: ./experiments_smoke/smoke3d_pred_latent_4step_pad_oldcode
+log_dir: $path_to_log$
 
 data:
-    data_dir: /home/zijiel/zijie/pde_data/smoke_data_nu0.003_b0.5
+    data_dir: $path_to_data$smoke_data_nu0.003_b0.5
     resolution: 64
     dataset_stat: smoke3d_stats_nu0_003_b0.5_all.npz
     start_frame: 0
