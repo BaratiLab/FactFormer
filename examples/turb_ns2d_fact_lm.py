@@ -16,12 +16,12 @@ import logging, pickle, h5py
 
 
 from libs.factorization_module import FABlock2D
-from libs.positional_encoding_module import SirenNet, GaussianFourierFeatureTransform, Sine
+from libs.positional_encoding_module import GaussianFourierFeatureTransform
 from libs.basics import PreNorm, MLP, masked_instance_norm
 from utils import Trainer, dict2namespace, index_points, load_checkpoint, save_checkpoint, ensure_dir
 import yaml
-from torch.optim.lr_scheduler import StepLR, OneCycleLR
-from loss_fn import rel_l2_loss, rel_l1_loss
+from torch.optim.lr_scheduler import OneCycleLR
+from loss_fn import rel_l2_loss
 
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import ImageGrid
@@ -77,18 +77,14 @@ class FactFormer2D(nn.Module):
         self.out_dim = config.out_dim
         self.out_tw = config.out_time_window
 
-        #self.num_latent = config.num_latent
-        #self.latent_dim = config.latent_dim   # latent bottleneck dimension
         self.dim = config.dim                 # dimension of the transformer
         self.depth = config.depth           # depth of the encoder transformer
         self.dim_head = config.dim_head
-        self.reducer = config.reducer
 
         self.heads = config.heads
 
         self.pos_in_dim = config.pos_in_dim
         self.pos_out_dim = config.pos_out_dim
-        self.positional_embedding = config.positional_embedding
         self.kernel_multiplier = config.kernel_multiplier
         self.latent_multiplier = config.latent_multiplier
         self.latent_dim = int(self.dim * self.latent_multiplier)
@@ -99,7 +95,6 @@ class FactFormer2D(nn.Module):
 
         # assume input is b c t h w d
         self.encoder = FactorizedTransformer(self.dim, self.dim_head, self.heads, self.dim, self.depth,
-
                                              kernel_multiplier=self.kernel_multiplier)
         self.expand_latent = nn.Linear(self.dim, self.latent_dim, bias=False)
         self.latent_time_emb = nn.Parameter(torch.randn(1, self.max_latent_steps,
@@ -118,7 +113,6 @@ class FactFormer2D(nn.Module):
             nn.GELU(),
             nn.Conv1d(self.dim // 2, self.out_dim, kernel_size=1, stride=1, padding=0, bias=True)
         )
-        # self.decoder = Reconstruct3D(self.dim, self.dim_head, self.heads, self.out_dim)
 
     def forward(self,
                 u,

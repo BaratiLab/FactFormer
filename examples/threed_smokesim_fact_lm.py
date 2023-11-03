@@ -16,11 +16,11 @@ import logging, pickle, h5py
 
 from libs.factorization_module import FABlock3D
 from libs.basics import PreNorm, MLP
-from nn_module.positional_encoding_module import SirenNet, GaussianFourierFeatureTransform, Sine
+from nn_module.positional_encoding_module import GaussianFourierFeatureTransform
 from utils import Trainer, dict2namespace, index_points, load_checkpoint, save_checkpoint, ensure_dir, Timer
 import yaml
-from torch.optim.lr_scheduler import StepLR, OneCycleLR
-from loss_fn import rel_l2_loss, rel_l1_loss
+from torch.optim.lr_scheduler import OneCycleLR
+from loss_fn import rel_l2_loss
 
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import ImageGrid

@@ -15,11 +15,11 @@ from torch.utils.data import Dataset, DataLoader, TensorDataset
 import logging, pickle, h5py
 
 from libs.factorization_module import FABlock2D
-from libs.positional_encoding_module import SirenNet, GaussianFourierFeatureTransform, Sine
+from libs.positional_encoding_module import GaussianFourierFeatureTransform
 from libs.basics import PreNorm, MLP, masked_instance_norm
 from utils import Trainer, dict2namespace, index_points, load_checkpoint, save_checkpoint, ensure_dir
 import yaml
-from torch.optim.lr_scheduler import StepLR, OneCycleLR
+from torch.optim.lr_scheduler import OneCycleLR
 from loss_fn import rel_l2_loss
 
 from matplotlib import pyplot as plt

@@ -14,13 +14,13 @@ from einops.layers.torch import Rearrange
 from torch.utils.data import Dataset, DataLoader, TensorDataset
 import logging, pickle, h5py
 
-from libs.positional_encoding_module import GaussianFourierFeatureTransform, SirenNet
+from libs.positional_encoding_module import GaussianFourierFeatureTransform
 from libs.factorization_module import FABlock3D
 from libs.basics import PreNorm, MLP
 from utils import Trainer, dict2namespace, index_points, load_checkpoint, save_checkpoint, ensure_dir
 import yaml
-from torch.optim.lr_scheduler import StepLR, OneCycleLR
-from loss_fn import rel_l2_loss, rel_l1_loss
+from torch.optim.lr_scheduler import OneCycleLR
+from loss_fn import rel_l2_loss
 
 from matplotlib import pyplot as plt
 from mpl_toolkits.axes_grid1 import ImageGrid
@@ -101,8 +101,6 @@ class FactFormer3D(nn.Module):
             nn.Conv2d(self.dim // 2, self.dim, kernel_size=(self.in_tw, 1), stride=1, padding=0, bias=False),
         )
 
-        self.time_embedding = SirenNet(1, self.dim, self.dim, 3, normalize_input=False)
-
         # assume input is b c t h w d
         self.encoder = FactorizedTransformer(self.dim, self.dim_head, self.heads, self.dim, self.depth,
                                              kernel_multiplier=self.kernel_multiplier,)
@@ -129,7 +127,6 @@ class FactFormer3D(nn.Module):
     def forward(self,
                 u,
                 pos_lst,
-                t_coord,  # [b,]
                 latent_steps,
                 ):
         # u: b c t h w d
@@ -140,8 +137,6 @@ class FactFormer3D(nn.Module):
         u = self.to_in(u)
         u = rearrange(u, 'b c 1 (nx ny nz) -> b nx ny nz c', nx=nx, ny=ny, nz=nz)
 
-        t_emb = self.time_embedding(t_coord.unsqueeze(-1))
-        u = u + t_emb.view(b, 1, 1, 1, -1)
         u = self.encoder(u, pos_lst)
         u = self.expand_latent(u)
         u_lst = []
@@ -493,19 +488,19 @@ class NS3DTrainer(Trainer):
 
             # t_step = self.curriculum_scheduler.get_value()
             if current_latent_steps is None:
-                y_hat = self.model(x, pos_lst, t_coord[:, 0], 1)
+                y_hat = self.model(x, pos_lst, 1)
                 y = y[:, 0:1]
             elif not pushforward:
-                y_hat = self.model(x, pos_lst, t_coord[:, 0], current_latent_steps)
+                y_hat = self.model(x, pos_lst, current_latent_steps)
                 y = y[:, 0:current_latent_steps]
             else:
                 with torch.no_grad():
-                    x_hat = self.model(x, pos_lst, t_coord[:, 0], current_latent_steps)
+                    x_hat = self.model(x, pos_lst, current_latent_steps)
                     x = torch.cat([x[:, :, current_latent_steps:],
                                    rearrange(
                                        x_hat,
                                        'b t h w d c -> b c t h w d')], dim=2)
-                y_hat = self.model(x.detach(), pos_lst, t_coord[:, current_latent_steps], current_latent_steps)
+                y_hat = self.model(x.detach(), pos_lst, current_latent_steps)
                 y = y[:, current_latent_steps:current_latent_steps * 2]
             # denormalize
             y_hat = self.denormalize(y_hat)
@@ -521,7 +516,7 @@ class NS3DTrainer(Trainer):
             y_hat = torch.zeros_like(y)  # b, t, h, w, c
             for i in range(y.shape[1] // self.max_latent_steps):
                 y_hat[:, i * self.max_latent_steps:(i + 1) * self.max_latent_steps] =\
-                    self.model.forward(x, pos_lst, t_coord[:, i], latent_steps=self.max_latent_steps)
+                    self.model.forward(x, pos_lst, latent_steps=self.max_latent_steps)
                 x = torch.cat([x[:, :, self.max_latent_steps:],
                                rearrange(
                                    y_hat[:, i * self.max_latent_steps:(i + 1) * self.max_latent_steps],
