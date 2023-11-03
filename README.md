@@ -1,5 +1,5 @@
 # FactFormer
-Official implementation of Scalable Transformer for PDE surrogate modeling
+Official implementation of Scalable Transformer for PDE surrogate modeling [(paper)](https://arxiv.org/abs/2305.17560) .
 
 ### Getting started
 
@@ -57,3 +57,18 @@ We provided the trained models used in the paper and their logs in the below lin
 | Darcy2d |  [link](https://drive.google.com/drive/folders/1HOffKyN8dd-W4iDA6MicISlID5Q4FOm_?usp=drive_link) |
 | Smoke3d | [link](https://drive.google.com/drive/folders/1W2LD_0C-rK85CXDPXMOKXnFORY4IN7TP?usp=drive_link) |
 | Turb3d |  [link](https://drive.google.com/drive/folders/1s_hdNrxa4dqA3wawA3c8fAFqFhYYhix6?usp=drive_link) |
+
+### Citation
+
+If you find this repo helpful, kindly consider citing with
+
+```
+@misc{li2023scalable,
+      title={Scalable Transformer for PDE Surrogate Modeling}, 
+      author={Zijie Li and Dule Shu and Amir Barati Farimani},
+      year={2023},
+      eprint={2305.17560},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG}
+}
+```
