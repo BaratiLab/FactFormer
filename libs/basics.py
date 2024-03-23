@@ -73,6 +73,70 @@ def masked_instance_norm(x, mask, eps = 1e-6):
     return ins_norm
 
 
+class GroupNorm(nn.Module):
+    # group norm with channel at the last dimension
+    def __init__(self, num_groups, num_channels,
+                 domain_wise=False,
+                 eps=1e-8, affine=True):
+        super().__init__()
+        self.num_groups = num_groups
+        self.num_channels = num_channels
+        self.domain_wise = domain_wise
+        self.eps = eps
+        self.affine = affine
+        if affine:
+            self.weight = nn.Parameter(torch.ones(num_channels), requires_grad=True)
+            self.bias = nn.Parameter(torch.zeros(num_channels), requires_grad=True)
+
+    def forward(self, x):
+        # b h w c
+        b, g_c = x.shape[0], x.shape[-1]
+        c = g_c // self.num_groups
+        if self.domain_wise:
+            x = rearrange(x, 'b ... (g c) -> b g (... c)', g=self.num_groups)
+        else:
+            x = rearrange(x, 'b ... (g c) -> b ... g c', g=self.num_groups)
+        mean = x.mean(dim=-1, keepdim=True)
+        var = x.var(dim=-1, keepdim=True)
+        x = (x - mean) / (var + self.eps).sqrt()
+        if self.domain_wise:
+            # b g (... c) -> b ... (g c)
+            x = x.view(b, self.num_groups, -1, c)
+            x = rearrange(x, 'b g ... c -> b ... (g c)')
+        else:
+            x = rearrange(x, 'b ... g c -> b ... (g c)',
+                          g=self.num_groups)
+        if self.affine:
+            x = x * self.weight + self.bias
+        return x
+
+
+class InstanceNorm(nn.Module):
+    # instance norm with channel at the last dimension
+    def __init__(self, num_channels, eps=1e-6, affine=False):
+        super().__init__()
+        self.num_channels = num_channels
+        self.eps = eps
+        self.affine = affine
+        if affine:
+            self.weight = nn.Parameter(torch.ones(num_channels), requires_grad=True)
+            self.bias = nn.Parameter(torch.zeros(num_channels), requires_grad=True)
+
+    def forward(self, x):
+        # b h w c
+        shape = x.shape
+        # collapse all spatial dimension
+        x = x.reshape(shape[0], -1, shape[-1])
+        mean = x.mean(dim=-2, keepdim=True)
+        var = x.var(dim=-2, keepdim=True)
+        x = (x - mean) / (var + self.eps).sqrt()
+        if self.affine:
+            x = x * self.weight + self.bias
+        # restore the spatial dimension
+        x = x.reshape(shape)
+        return x
+
+
 def get_time_embedding(t, dim):
     """
     This matches the implementation in Denoising Diffusion Probabilistic Models:

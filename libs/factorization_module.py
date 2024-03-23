@@ -6,7 +6,7 @@ from einops import rearrange, repeat
 from einops.layers.torch import Rearrange
 from typing import Union, Tuple, List, Optional
 from libs.positional_encoding_module import RotaryEmbedding, apply_rotary_pos_emb, SirenNet
-from libs.basics import PreNorm, PostNorm, GeAct, MLP, masked_instance_norm
+from libs.basics import PreNorm, PostNorm, GeAct, MLP, masked_instance_norm, GroupNorm, InstanceNorm
 from libs.attention import LowRankKernel
 
 
@@ -75,7 +75,7 @@ class FABlock2D(nn.Module):
                                                if kernel_multiplier > 4 or use_softmax else scaling_factor)
 
         self.to_out = nn.Sequential(
-            nn.InstanceNorm2d(dim_head * heads),
+            GroupNorm(heads, dim_head * heads, domain_wise=True, affine=False),
             nn.Linear(dim_head * heads, dim_out, bias=False),
             nn.GELU(),
             nn.Linear(dim_out, dim_out, bias=False))
@@ -155,7 +155,7 @@ class FABlock3D(nn.Module):
                                                if kernel_multiplier > 4 or use_softmax else scaling_factor)
 
         self.to_out = nn.Sequential(
-            nn.InstanceNorm3d(dim_head * heads),
+            GroupNorm(heads, dim_head * heads, domain_wise=True, affine=False),
             nn.Linear(dim_head * heads, dim_out, bias=False),
             nn.GELU(),
             nn.Linear(dim_out, dim_out, bias=False))

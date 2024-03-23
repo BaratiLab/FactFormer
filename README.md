@@ -21,7 +21,7 @@ fa_layer = FABlock3D(dim,                   # input dimension
                      scaling_factor         # use scaling factor to modulate the kernel, an example is 1/ sqrt(d) like scaled-dot product attention, by default is: 1
                     )
 # random input
-z = torch.randn(((4, 64, 64, 64, dim))
+z = torch.randn((4, 64, 64, 64, dim))
 # axial coords
 pos_x = torch.linspace(0, 1, 64).unsqueeze(-1)       # leave a channel  dimension   
 pos_y = torch.linspace(0, 1, 64).unsqueeze(-1)
