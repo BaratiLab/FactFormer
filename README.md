@@ -23,9 +23,9 @@ fa_layer = FABlock3D(dim,                   # input dimension
 # random input
 z = torch.randn(((4, 64, 64, 64, dim))
 # axial coords
-pos_x = torch.linspace(0, 1, 64)
-pos_y = torch.linspace(0, 1, 64)
-pos_z = torch.linspace(0, 1, 64)
+pos_x = torch.linspace(0, 1, 64).unsqueeze(-1)       # leave a channel  dimension   
+pos_y = torch.linspace(0, 1, 64).unsqueeze(-1)
+pos_z = torch.linspace(0, 1, 64).unsqueeze(-1)
 
 z = fa_layer(z, [pos_x, pos_y, pos_z])
 ```
@@ -60,7 +60,7 @@ We provided the trained models used in the paper and their logs in the below lin
 
 ### Citation
 
-If you find this repo helpful, kindly consider citing with
+If you find this repo helpful, kindly consider citing it with
 
 ```
 @misc{li2023scalable,
